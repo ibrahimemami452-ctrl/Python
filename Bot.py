@@ -1,53 +1,50 @@
 import telebot
-import sqlite3
-from telebot import types
 import threading
+import queue
+import sqlite3
+import time
 
-# Database setup
-conn = sqlite3.connect('bot_database.db')
-cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS commands (id INTEGER PRIMARY KEY, command TEXT)''')
-conn.commit()
-
-API_TOKEN = 'YOUR_TELEGRAM_BOT_API_TOKEN'
-
+# Initialize the bot with your token
+API_TOKEN = 'YOUR_API_TOKEN_HERE'
 bot = telebot.TeleBot(API_TOKEN)
 
-# Function to handle dashboard button
-@bot.message_handler(func=lambda message: message.text == 'Dashboard')
-def handle_dashboard(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    item1 = types.KeyboardButton('Button 1')
-    item2 = types.KeyboardButton('Button 2')
-    markup.add(item1, item2)
-    bot.send_message(message.chat.id, 'Choose an option:', reply_markup=markup)
+# Create a SQLite database for storing button states
+connection = sqlite3.connect('button_states.db')
+cursor = connection.cursor()
 
-# Function to handle long polling
-def start_polling():
-    bot.polling(none_stop=True)
+# Create a table to store button states
+cursor.execute('''CREATE TABLE IF NOT EXISTS buttons (id INTEGER PRIMARY KEY, state TEXT)''')
+connection.commit()
 
-# Worker thread to handle polling
-threads = []
-for i in range(10):
-    thread = threading.Thread(target=start_polling)
-    thread.start()
-    threads.append(thread)
+# Button handler
+@bot.callback_query_handler(func=lambda call: True)
+def handle_button(call):
+    button_id = call.data
+    # Update the state in the database
+    cursor.execute('''INSERT OR REPLACE INTO buttons (id, state) VALUES (?, ?)''', (button_id, 'pressed'))
+    connection.commit()
+    bot.send_message(call.message.chat.id, f'Button {button_id} pressed!')
 
-# Function to handle button 1
-@bot.message_handler(func=lambda message: message.text == 'Button 1')
-def handle_button1(message):
-    bot.send_message(message.chat.id, 'You pressed Button 1!')
+# Worker thread function to process updates
+def worker_thread(q):
+    while True:
+        button_id = q.get()
+        if button_id is None:
+            break
+        # Process the button press
+        threading.Thread(target=lambda: handle_button(button_id)).start()
+        q.task_done()
 
-# Function to handle button 2
-@bot.message_handler(func=lambda message: message.text == 'Button 2')
-def handle_button2(message):
-    bot.send_message(message.chat.id, 'You pressed Button 2!')
+# Initialize the queue and start worker threads
+q = queue.Queue()
+num_worker_threads = 4
+for _ in range(num_worker_threads):
+    threading.Thread(target=worker_thread, args=(q,), daemon=True).start()
 
-# Handle commands
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(message.chat.id, 'Welcome! Click the button below to enter the dashboard:', reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add(types.KeyboardButton('Dashboard')))
-
-# Main execution
-if __name__ == '__main__':
-    start_polling()  
+# Long polling to process messages
+while True:
+    try:
+        bot.polling(none_stop=True)
+    except Exception as e:
+        print(f'Error: {e}')
+        time.sleep(5)
